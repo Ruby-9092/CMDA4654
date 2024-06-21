@@ -1,0 +1,710 @@
+---
+title: "CMDA4654_Project1"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+---
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(leaps)
+library(dplyr)
+library(caret)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(class)
+library(xtable)
+library(readxl)
+library(ggforce)
+library(glmnet)
+library(readr)
+library(pROC)
+library(naivebayes)
+
+
+data0 <- read_excel("data_of_control_972.xlsx")
+data1 <- read_excel("SSNHL_PLOS.xlsx")
+names(data1)[names(data1) == "DM"] <- "Diabetes"
+names(data1)[names(data1) == "Height(Cm)"] <- "Height"
+names(data1)[names(data1) == "Weight(Kg)"] <- "Weight"
+names(data1)[names(data1) == "Height(Cm)"] <- "Height"
+names(data1)[names(data1) == "LDL"] <- "LDLcal"
+names(data0)[names(data0) == "MI/angina"] <- "MI_angina"
+
+#obtain feature that in both dataset which will be useful
+data0 <- subset(data0, select = c("sudden", "sex", "age", "hypertension", "dyslipidemia", "stroke", "MI_angina", "Diabetes", "Thyroid", "CRF", "Height", "Weight", "BMI", "HDL", "TG", "LDLcal"))
+data1 <- subset(data1, select = c("sudden", "sex", "age", "hypertension", "dyslipidemia", "stroke", "MI_angina", "Diabetes", "Thyroid", "CRF", "Height", "Weight", "BMI", "HDL", "TG", "LDLcal"))
+
+df<-rbind(data0, data1)
+df <- na.omit(df)
+
+#separate in to training and testing data
+set.seed(123)
+n <- nrow(df)
+train_size <- round(n * 0.7)
+train_indices <- sample(1:n, train_size)
+train_df <- df[train_indices, ]
+test_df <- df[-train_indices, ]
+```
+Dataset information
+=====================================
+Sidebar {.sidebar}
+-----------------------------------------------------------------------
+### Dataset information
+data_of_control_972.xlsx: contain data for individual who doesn't have sudden sensorineural hearing loss
+
+SSNHL_PLOS.xlsx: contain data for individual who have sudden sensorineural hearing loss
+
+Website: https://zenodo.org/records/5010818
+
+Drive: https://drive.google.com/drive/folders/1UsqUvodLMr_k93TVjaSuRARqlXIyLe3e?usp=drive_link
+
+In this study, we retain only the data that are consistent across both datasets and features whose meanings are unequivocally clear.
+
+Row
+-----------------------------------------------------------------------
+### Raw data's feature
+```{r}
+library(knitr)
+
+feature_descriptions <- data.frame(
+  Feature = c("sudden", "ID", "sex", "age", "hypertension", "dyslipidemia", "stroke", "MI/angina", "Diabetes", "Thyroid", "CRF", "Height", "Weight", "BMI", "HE_wc", "TOTALchole", "HDL", "TG", "LDLcal", "Phospholipid", "Free Fatty Acid", "Lipoprotein", "Lipid_total", "Followup_weeks", "Siegel_criteria", "Initial_audio(dB)", "Last_audio(dB)", "AUDIORt", "AUDIOLt"),
+  Description = c(
+    "Sudden Sensorineural Hearing Loss happen",
+    "A unique identifier for each individual",
+    "The biological sex",
+    "The age of the individual",
+    "This individual has hypertension",
+    "This individual has dyslipidemia, which is an abnormal amount of lipids in the blood",
+    "This individual has stroke",
+    "This individual has Myocardial infarction",
+    "This individual has diabetes.",
+    "This individual has thyroid dysfunction",
+    "This individual has Chronic Renal Failure",
+    "The height of the individual, in centimeters",
+    "The weight of the individual, in kilograms",
+    "Body Mass Index of the individual",
+    "Waist circumference, possibly measured at the health examination in unit of centimeters",
+    "Total cholesterol levels in the blood",
+    "High-Density Lipoprotein cholesterol levels",
+    "Triglycerides",
+    "Low-Density Lipoprotein cholesterol",
+    "Phospholipid levels in the blood.",
+    "Free fatty acid levels in the blood.",
+    "Likely indicates the concentration of a certain lipoprotein subclass.",
+    "Total lipid levels in the blood.",
+    "The number of weeks of follow-up after an initial event or diagnosis.",
+    "Likely a scoring or classification system related to the study, perhaps to grade the severity of hearing loss.",
+    "The level of hearing loss at first diagnosis.",
+    "The current level of hearing loss.",
+    "An audio test result for the right ear",
+    "An audio test result for the left ear"
+  )
+)
+
+kable(feature_descriptions, format = "markdown", col.names = c("Feature", "Description"))
+```
+
+Row
+-----------------------------------------------------------------------
+### Cleaned feature used in this report
+```{r}
+cleaned_features <- data.frame(
+  Feature = c("sudden", "sex", "age", "hypertension", "dyslipidemia", "stroke", "MI_angina", "Diabetes", "Thyroid", "CRF", "Height", "Weight", "BMI", "HDL", "TG", "LDLcal"),
+  Description = c(
+    "Sudden Sensorineural Hearing Loss happen",
+    "The biological sex",
+    "The age of the individual",
+    "This individual have hypertension",
+    "This individual have dyslipidemia, which is an abnormal amount of lipids in the blood.",
+    "This individual have stroke.",
+    "This individual have Myocardial infarction",
+    "This individual have diabetes.",
+    "This individual have thyroid dysfunction",
+    "This individual have Chronic Renal Failure",
+    "The height of the individual, in centimeters.",
+    "The weight of the individual, in kilograms.",
+    "Body Mass Index of the individual.",
+    "High-Density Lipoprotein cholesterol levels",
+    "Triglycerides",
+    "Low-Density Lipoprotein cholesterol"
+  )
+)
+
+kable(cleaned_features, format = "markdown", col.names = c("Feature", "Description"))
+```
+
+Multiple Regression
+=====================================
+Sidebar {.sidebar}
+-----------------------------------------------------------------------
+
+### TG Prediction Using Multiple Regression
+
+Multiple regression allows us to use data from various columns to predict `TG` levels, which are typically measured through a blood test. If a reliable regression model is developed, it can save costs associated with additional testing.
+Our analysis using best subset regression suggests that a model with four variables (`age`, `CRF`, `Weight`, `HDL`) has the lowest BIC value and a relatively high adjusted \(R^2\). However, visual inspection of the model's predictions compared to actual `TG` levels indicates the model may not be ideal for this dataset. Moreover, the regression line's jagged appearance in the TG vs. HDL graph may suggest overfitting.
+
+Row
+-----------------------------------------------------------------------
+### Find Best Subset Regression Evaluation
+```{r fig.width=4, fig.height=3.5}
+# Return the best models for prediction for TG
+best_subsets_reg <- regsubsets(TG ~ sex + age + hypertension + dyslipidemia + 
+    stroke + `MI_angina` + Diabetes + Thyroid + CRF + Height + 
+    Weight + BMI + HDL + LDLcal, data = train_df)
+best_subsets_summary <- summary(best_subsets_reg)
+tmpdf <- data.frame(
+  Number_of_Variables = 1:length(best_subsets_summary$adjr2),
+  adjR2 = best_subsets_summary$adjr2,
+  BIC = best_subsets_summary$bic
+)
+
+# draw the graph for result of adjR2, Cp and BIC
+ggplot(tmpdf, aes(x = 1:8, y = adjR2)) + geom_point(size = 3) + geom_line() +
+labs(x = "Number of variables", y = "Adjusted R-squared", title = "Adjusted R-squared for mutiple regerssion") + theme_bw() +
+scale_x_continuous(breaks = 1:8)
+
+ggplot(tmpdf, aes(x = 1:8, y = BIC)) + geom_point(size = 3) + geom_line() +
+labs(x = "Number of variables", y = "Bayesian Information Criterion", title = "Bayesian Information Criterion for mutiple regerssion") + theme_bw() +
+scale_x_continuous(breaks = 1:8)
+```
+
+Row
+-----------------------------------------------------------------------
+### Multiple Regression Model for TG
+```{r fig.width=4, fig.height=4}
+hearingfit <- lm(TG ~ age + CRF + Weight + HDL,  data = train_df)
+
+#plot the prediction
+test_df$predicted_TG <- predict(hearingfit, newdata = test_df)
+y_value <- test_df$TG
+plot(test_df$HDL, test_df$TG, xlab = "HDL", ylab = "TG", main = "TG vs. HDL with Mutiple Regression Line", pch = 19, col = "blue")
+sorted_df <- test_df[order(test_df$HDL),]
+lines(sorted_df$HDL, sorted_df$predicted_TG, col = "red")
+
+#plot the prediction
+plot(y_value, test_df$predicted_TG, 
+     main = "Actual vs. Predicted TG", 
+     xlab = "Actual TG", 
+     ylab = "Predicted TGs", 
+     pch = 19, col = "blue")
+abline(0, 1, col = "red")
+
+#print out the summary
+knitr::kable(summary(hearingfit)$coefficients, caption = "Coefficients of the Multiple Regression Model for TG", digits = 3)
+```
+
+
+Ridge Regression
+=====================================
+Sidebar {.sidebar}
+-----------------------------------------------------------------------
+### Predict TG Using Ridge Regression & Log Transformation
+In this algorithm, the magnitude of the coefficients derived from the Ridge Regression Model suggests a significant association between "TG" and the variables "CRF," "dyslipidemia," and "Thyroid," as evidenced by their relatively large coefficients.
+
+Upon examining the fitted regression line, evidence of heteroscedasticity was observed, characterized by non-constant variance in the residuals of the predicted values. To address this, a logarithmic transformation was applied, significantly improving the model's fit. This improvement is quantitatively supported by the reduction in the Mean Squared Error (MSE), which decreased from 3248.609 to 72.087, underscoring the effectiveness of the logarithmic transformation.
+
+Row
+-----------------------------------------------------------------------
+### Ridge Regression: using all feature to predict TG
+```{r}
+library(glmnet)
+X <- model.matrix(TG ~ . -1, data=train_df)
+Y <- train_df$TG
+
+#shown the coef use in regression
+cv_ridge <- cv.glmnet(X, Y, alpha = 0)
+lambda_best <- cv_ridge$lambda.min
+coef_best <- coef(cv_ridge, s = "lambda.min")
+coef_df <- as.data.frame(as.matrix(coef_best))
+coef_df$Term <- rownames(coef_df)
+rownames(coef_df) <- NULL
+coef_df <- coef_df[, c("Term", "s1")]
+colnames(coef_df) <- c("Term", "Coefficient")
+knitr::kable(coef_df, caption = "Coefficients of the Ridge Regression Model for TG", digits = 3)
+```
+Row
+-----------------------------------------------------------------------
+### Ridge Regression: using all feature to predict TG
+```{r fig.width=4, fig.height=4}
+#Calculate model accuracy value.
+actual_Y <- test_df$TG
+
+#delete data from previous algorithm
+test_df$predicted_TG <- NULL
+
+#get prediction
+new_X <- model.matrix(TG ~ . -1, data=test_df)
+predictions <- predict(cv_ridge, newx = new_X, s = "lambda.min")
+
+plot(actual_Y, predictions, 
+     main = "Actual vs. Predicted TG", 
+     xlab = "Actual TG", 
+     ylab = "Predicted TGs", 
+     pch = 19, col = "blue")
+abline(0, 1, col = "red")
+
+residuals <- actual_Y - predictions
+plot(predictions, residuals, 
+     main = "Residuals vs. Predicted", 
+     xlab = "Predicted TG", 
+     ylab = "Residuals", 
+     pch = 19, col = "blue")
+abline(h = 0, col = "red")
+
+MSE <- mean((actual_Y - predictions)^2)
+SSE <- sum((actual_Y - predictions)^2)
+SST <- sum((actual_Y - mean(actual_Y))^2)
+R2 <- 1 - (SSE / SST)
+
+n <- nrow(test_df)
+p <- length(coef(cv_ridge, s = "lambda.min")) - 1
+adjusted_R2 <- 1 - ((1 - R2) * (n - 1) / (n - p - 1))
+
+results_df <- data.frame(
+  Metric = c("MSE", "R2", "Adjusted_R2"),
+  Value = c(MSE, R2, adjusted_R2)
+)
+knitr::kable(results_df, caption = "Evaluation Value for Ridge Regression", digits = 3)
+```
+Row
+-----------------------------------------------------------------------
+### Ridge Regression: Log Tranformation on TG
+```{r fig.width=4, fig.height=4}
+#log transformation
+train_df$TG_log <- log(train_df$TG)
+Y_log <- train_df$TG_log
+X <- model.matrix(~ . - TG -1, data=train_df)
+cv_ridge_log <- cv.glmnet(X, Y_log, alpha = 0)
+
+test_df$TG_log <- log(test_df$TG)
+new_X <- model.matrix(~ . - TG -1, data=test_df)
+
+predictions_log <- predict(cv_ridge_log, newx = new_X, s = "lambda.min")
+predictions_original_scale <- exp(predictions_log) 
+
+plot(actual_Y, predictions_original_scale, 
+     main = "Actual vs. Predicted TG", 
+     xlab = "Actual TG", 
+     ylab = "Predicted TGs", 
+     pch = 19, col = "blue")
+abline(0, 1, col = "red")
+
+residuals <- actual_Y - predictions_original_scale
+plot(predictions_original_scale, residuals, 
+     main = "Residuals vs. Predicted", 
+     xlab = "Predicted TG", 
+     ylab = "Residuals", 
+     pch = 19, col = "blue")
+abline(h = 0, col = "red")
+
+# Calculate model accuracy values for the log model
+
+# Actual values on the original scale
+actual_Y <- test_df$TG
+
+predictions_original_scale <- exp(predictions_log)
+
+MSE_log_model <- mean((actual_Y - predictions_original_scale)^2)
+SSE_log_model <- sum((actual_Y - predictions_original_scale)^2)
+SST_log_model <- sum((actual_Y - mean(actual_Y))^2)
+
+R2_log_model <- 1 - (SSE_log_model / SST_log_model)
+
+n <- nrow(test_df)
+p <- length(coef(cv_ridge_log, s = "lambda.min")) - 1
+
+adjusted_R2_log_model <- 1 - ((1 - R2_log_model) * (n - 1) / (n - p - 1))
+
+results_df_log_model <- data.frame(
+  Metric = c("MSE", "R2", "Adjusted_R2"),
+  Value = c(MSE_log_model, R2_log_model, adjusted_R2_log_model)
+)
+
+knitr::kable(results_df_log_model, caption = "Evaluation Value for Ridge Regression After Log Transformation", digits = 3)
+
+```
+
+
+natural cubic spline
+=====================================
+Sidebar {.sidebar}
+-----------------------------------------------------------------------
+### Natural Cubic Spline to Predict TG Using HDL
+For the natural cubic spline analysis, we initially evaluated the optimal degree of freedom by examining the "MSE for Different Degrees of Freedom" graph. This progress shown that a natural cubic spline with three degrees of freedom (df=3) is the optimal selection based on the lowest mean squared error.
+
+After fitting the data with a natural cubic spline of df=3, the resulting fit line appeared to be well-balanced, demonstrating a smooth curve without signs of overfitting. However, the model exhibited a relatively high mean squared error (MSE) and a low coefficient of determination ($R^2$) for both in-sample and out-of-sample data. This outcome could be attributed to the dispersed nature of the data, suggesting that the relationship between the variables may not be readily observable.
+
+Row
+-----------------------------------------------------------------------
+### Scatter Plot for TG vs. HDL & Degree of Freedom Test.
+```{r fig.width=5, fig.height=5}
+library(splines)
+#remove log_TG for this algorithm
+train_df$TG_log = NULL
+
+#HDL & TG
+plot(train_df$HDL, train_df$TG, 
+     main = "HDL vs.TG", 
+     xlab = "HDL", 
+     ylab = "TG", 
+     pch = 19, col = "blue")
+
+#test which df can be the best using MSE
+dfs <- 2:10
+mse_values <- numeric(length(dfs))
+
+for (i in seq_along(dfs)) {
+  df_current <- dfs[i]
+  model <- lm(TG ~ ns(HDL, df = df_current), data = train_df)
+  predictions <- predict(model, newdata = test_df)
+  mse_values[i] <- mean((test_df$TG - predictions)^2)
+}
+mse_df <- data.frame(DegreeOfFreedom = dfs, MSE = mse_values)
+
+ggplot(mse_df, aes(x = DegreeOfFreedom, y = MSE)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "MSE for Different Degrees of Freedom",
+       x = "Degrees of Freedom",
+       y = "MSE")
+```
+
+Row
+-----------------------------------------------------------------------
+### Scatter Plot With Natural Cubic Spline
+```{r fig.width=6, fig.height=4}
+#plot over actual data and fit line.
+HDL_vals <- seq(from = min(train_df$HDL), to = max(train_df$HDL), length.out = 100)
+final_model <- lm(TG ~ ns(HDL, df = 3), data = train_df)
+predicted_TG <- predict(final_model, newdata = data.frame(HDL = HDL_vals))
+plot_df <- data.frame(HDL = HDL_vals, TG = predicted_TG)
+ggplot(train_df, aes(x = HDL, y = TG)) +
+  geom_point() +
+  geom_line(data = plot_df, aes(x = HDL, y = TG), col = "red") +
+  labs(title = "Fit Line using Natural Cubic Splines",
+       x = "HDL",
+       y = "TG")
+
+#accuracy table for in sample/out sample
+out_actual_Y <- test_df$TG
+in_actual_Y <- train_df$TG
+
+out_predicted_TG <- predict(final_model, newdata = data.frame(HDL = test_df$HDL))
+in_predicted_TG <- predict(final_model, newdata = data.frame(HDL = train_df$HDL))
+
+
+MSE_in_model <- mean((in_actual_Y - in_predicted_TG)^2)
+SSE_in_model <- sum((in_actual_Y - in_predicted_TG)^2)
+SST_in_model <- sum((in_actual_Y - mean(in_actual_Y))^2)
+R2_in_model <- 1 - (SSE_in_model / SST_in_model)
+
+MSE_out_model <- mean((out_actual_Y - out_predicted_TG)^2)
+SSE_out_model <- sum((out_actual_Y - out_predicted_TG)^2)
+SST_out_model <- sum((out_actual_Y - mean(out_actual_Y))^2)
+R2_out_model <- 1 - (SSE_out_model / SST_out_model)
+
+results_model <- data.frame(
+  Metric = c("in sample MSE", "in sample R2", "out of sample MSE", "out of sample R2"),
+  Value = c(MSE_in_model, R2_in_model, MSE_out_model, R2_out_model)
+)
+
+knitr::kable(results_model, caption = "Evaluation Value for Natural Cubic Spline", digits = 4)
+```
+
+
+
+kNN classifiication
+=====================================
+Sidebar {.sidebar}
+-----------------------------------------------------------------------
+
+Introduction
+
+This study utilizes k-Nearest Neighbors (kNN) classification to investigate whether common health indicators—Body Mass Index (BMI), high-density lipoprotein (HDL), and triglycerides (TG)—can predict the risk of sudden sensorineural hearing loss (SSNHL). Through machine learning, we aim to determine the significance of these indicators in relation to SSNHL, optimizing our kNN model by testing various neighbor values. Our goal is to provide insights into potential early warning signs for SSNHL, which could be instrumental in guiding preventive measures.
+
+Conclusion
+
+The results from our kNN model highlight a clear link between lipid levels and the risk of SSNHL. The boxplot we've created shows small changes in SSNHL risk predictions when we adjust the number of neighbors (k) used in the model, with k=10 giving slightly higher risk estimates. On average, the risk predictions are 24.38% for k=3, 25.82% for k=5, and 25.07% for k=10. This suggests that higher levels of cholesterol and HDL are important to watch for as they could signal a higher chance of developing SSNHL. By incorporating kNN models into routine health evaluations, doctors could potentially improve how they predict and prevent SSNHL, aiming for better health outcomes.
+
+
+Row
+-----------------------------------------------------------------------
+
+### kNN classifiication
+```{r}
+features <- df[, c("HDL", "TG")]
+target <- df$sudden
+
+set.seed(42) 
+index <- createDataPartition(target, p = .8, list = FALSE)
+trainData <- features[index, ]
+trainTarget <- target[index]
+testData <- features[-index, ]
+testTarget <- target[-index]
+
+preProcValues <- preProcess(trainData, method = c("center", "scale"))
+trainDataNorm <- predict(preProcValues, trainData)
+testDataNorm <- predict(preProcValues, testData)
+
+train_and_predict <- function(k, trainData, trainTarget, testData) {
+  
+  knnFit <- knn3(trainData, trainTarget, k = k)
+  predict(knnFit, testData, type = "prob")[,2] 
+}
+
+trainTarget <- as.factor(trainTarget)
+testTarget <- as.factor(testTarget)
+
+# k = 3
+probabilities_k3 <- train_and_predict(3, trainDataNorm, trainTarget, testDataNorm)
+mean_probability_k3 <- mean(probabilities_k3) * 100
+
+# k = 5
+probabilities_k5 <- train_and_predict(5, trainDataNorm, trainTarget, testDataNorm)
+mean_probability_k5 <- mean(probabilities_k5) * 100
+
+# k = 10
+probabilities_k10 <- train_and_predict(10, trainDataNorm, trainTarget, testDataNorm)
+mean_probability_k10 <- mean(probabilities_k10) * 100
+
+plot_data <- data.frame(k = factor(rep(c(3, 5, 10), each = length(testTarget))),
+                        Probability = c(probabilities_k3, probabilities_k5,probabilities_k10 ))
+
+# Plot
+ggplot(plot_data, aes(x = k, y = Probability)) +
+  geom_boxplot() +
+  labs(title = "Predicted Probability of SSNHL for k=3, k=5, and k=10",
+       x = "Number of Neighbors (k)",
+       y = "Predicted Probability of SSNHL") +
+  theme_minimal()
+```
+
+Row
+-----------------------------------------------------------------------
+
+kNN Table
+```{r}
+train_and_predict_cm <- function(k, trainData, trainTarget, testData, testTarget) {
+  knnFit <- knn(train = trainData, test = testData, cl = trainTarget, k = k)
+  cm <- table(Predicted = knnFit, Actual = testTarget)
+  
+  return(cm)
+}
+cm_k3 <- train_and_predict_cm(3, trainDataNorm, trainTarget, testDataNorm, testTarget)
+cm_k5 <- train_and_predict_cm(5, trainDataNorm, trainTarget, testDataNorm, testTarget)
+cm_k10 <- train_and_predict_cm(10, trainDataNorm, trainTarget, testDataNorm, testTarget)
+
+knn_results <- data.frame(
+  k = c(3, 5, 10),
+  True_Negatives = c(cm_k3[1, 1], cm_k5[1, 1], cm_k10[1, 1]),
+  False_Positives = c(cm_k3[1, 2], cm_k5[1, 2], cm_k10[1, 2]),
+  False_Negatives = c(cm_k3[2, 1], cm_k5[2, 1], cm_k10[2, 1]),
+  True_Positives = c(cm_k3[2, 2], cm_k5[2, 2], cm_k10[2, 2])
+)
+
+knn_table <- knn_results %>%
+  kable(caption = "KNN Classification Results for Different Values of k") %>%
+  kable_styling("hover", full_width = F)
+
+knn_table
+```
+
+
+
+Naive Bayes Classification
+=====================================
+
+Sidebar {.sidebar}
+-----------------------------------------------------------------------
+Introduction
+
+Ｗe're using Naive Bayes classification to sift through data on SSNHL, HDL, and BMI. This statistical approach will allow us to categorize each person into different risk levels for sudden hearing loss based on these health indicators. By analyzing the patterns in this data, Naive Bayes helps us identify who is at a higher risk. This insight is vital for early intervention, where we can offer specific guidance or treatment to those identified as high-risk, aiming to reduce their chances of experiencing sudden hearing loss.
+
+Conclusion
+
+The plot suggests a subtle trend where individuals aged 41-60 might face a higher risk of sudden hearing loss, as seen by a denser cluster of red dots, which represent SSNHL cases. This age group's data points seem more tightly packed, indicating that factors contributing to SSNHL might be more prevalent or pronounced in this demographic. While the risk appears to span all ages, the middle-aged group stands out, hinting that factors like age-related health changes could play a role. Nonetheless, the blend of red and blue dots in every age category implies that SSNHL is likely a complex condition affected by multiple factors beyond just age and the two health measures of BMI and HDL displayed here. 
+
+Row
+-----------------------------------------------------------------------
+
+Naive Bayes Classification 
+
+```{r}
+df$SSNHL_status <- factor(df$sudden, levels = c(0, 1),
+                          labels = c("No SSNHL", "SSNHL"))
+
+df$Age_Group <- cut(df$age, breaks = c(0, 20, 40, 60, 80, 100),
+                    labels = c("0-20", "21-40", "41-60", "61-80", "81-100"))
+
+plot <- ggplot(df, aes(x = BMI, y = HDL, color = SSNHL_status)) +
+  geom_point(alpha = 0.6) +
+  facet_wrap(~Age_Group) +
+  labs(title = "BMI vs. HDL by Age Group",
+       subtitle = "Colored by SSNHL status",
+       x = "BMI",
+       y = "HDL (mg/dL)",
+       color = "SSNHL Status") +
+  theme_minimal() +
+  scale_color_manual(values = c("No SSNHL" = "blue", "SSNHL" = "red")) 
+
+print(plot)
+```
+
+-----------------------------------------------------------------------
+
+
+
+Bayes Table
+```{r}
+control <- trainControl(method = "cv", number = 10)
+metric <- "Accuracy"
+
+trainIndex <- createDataPartition(df$sudden, p = .8, list = FALSE, times = 1)
+trainData <- df[trainIndex, ]
+testData <- df[-trainIndex, ]
+
+trainData$sudden <- as.factor(trainData$sudden)
+testData$sudden <- as.factor(testData$sudden)
+
+model <- train(sudden ~ BMI + HDL, data = trainData, method = "naive_bayes",
+               trControl = control, metric = metric)
+
+predictions <- predict(model, testData)
+
+testData$sudden <- factor(testData$sudden, levels = levels(trainData$sudden))
+predictions <- factor(predictions, levels = levels(trainData$sudden))
+
+confusion <- confusionMatrix(predictions, testData$sudden)
+
+accuracy <- confusion$overall['Accuracy']
+precision <- confusion$byClass['Pos Pred Value'][1]
+recall <- confusion$byClass['Sensitivity'][1]
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+confusion_matrix_df <- as.data.frame.matrix(confusion$table)
+
+confusion_matrix_kable <- kable(confusion_matrix_df, 
+                                caption = "Naive Bayes Classification Confusion Matrix", 
+                                align = 'c', format = "html", 
+                                col.names = c("Predicted Negative", "Predicted Positive")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), 
+                full_width = F, 
+                position = "left", 
+                font_size = 12, 
+                html_font = "Cambria") %>%
+  add_header_above(c(" " = 1, "Actual SSNHL Status" = 2))
+
+metrics_df <- data.frame(
+  Metric = c('Accuracy', 'Precision', 'Recall', 'F1 Score'),
+  Value = c(accuracy, precision, recall, f1_score)
+)
+
+metrics_kable <- kable(metrics_df, 
+                       caption = "Performance Metrics", 
+                       align = 'c', format = "html", 
+                       col.names = names(metrics_df)) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), 
+                full_width = F, 
+                position = "left", 
+                font_size = 12, 
+                html_font = "Cambria") %>%
+  add_header_above(c("Performance Metrics" = 2)) %>% # Corrected to match the number of columns
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE, background = "#F7F7F9")
+metrics_kable
+
+```
+
+-----------------------------------------------------------------------
+
+
+Classification using Logistic Regression
+=====================================
+Sidebar {.sidebar}
+-----------------------------------------------------------------------
+Introduction
+
+Utilizing logistic regression, this study targets the identification of individuals at heightened risk for sudden sensorineural hearing loss (SSNHL), with an emphasis on the roles of lipid profiles and obesity. This statistical approach allows for the differentiation between high-risk and low-risk groups based on key predictors such as total cholesterol, triglycerides, and BMI. The goal is to enable earlier interventions for those at risk and to contribute to the understanding of SSNHL's risk factors, paving the way for targeted preventive strategies.
+
+Conclusion
+
+The ROC curve derived from logistic regression analysis, focusing on the correlation between lipid profiles, obesity, and the incidence of sudden sensorineural hearing loss (SSNHL), indicates that the model has good predictive power. The graph shows that as the body mass index (BMI) and lipid measures—specifically total cholesterol and triglycerides—escalate, so does the risk of SSNHL, corroborating the premise that vascular health is significantly tied to the onset of this condition. Consequently, these factors may serve as reliable indicators for identifying individuals at heightened risk for SSNHL, which can lead to earlier and potentially more effective interventions.
+
+Row
+-----------------------------------------------------------------------
+
+ Classification using Logistic Regression
+```{r}
+x <- as.matrix(df[, c("BMI", "HDL", "TG", "LDLcal")])  
+df$SSNHL_status <- factor(df$sudden, levels = c(0, 1), labels = c("No SSNHL", "SSNHL"))
+y <- df$SSNHL_status  
+
+cv_fit <- cv.glmnet(x, y, family = "binomial", alpha = 1)
+
+predictions <- predict(cv_fit, newx = x, s = "lambda.min", type = "response")
+
+
+response_numeric <- as.numeric(df$sudden) 
+
+roc_result <- roc(response = response_numeric, predictor = predictions[, 1])
+
+plot(roc_result, main="ROC Curve", col="#1c61b6")
+abline(a=0, b=1, lty=2, col="red") 
+
+```
+
+
+-----------------------------------------------------------------------
+
+Logistic Regression Table
+```{r}
+predicted_classes <- ifelse(predictions[, 1] > 0.5, 1, 0)
+classification_table <- table(Predicted = predicted_classes, Actual = response_numeric)
+
+TN <- classification_table[1, 1]
+FP <- classification_table[2, 1]
+FN <- classification_table[1, 2]
+TP <- classification_table[2, 2]
+
+precision <- TP / (TP + FP)
+recall <- TP / (TP + FN)
+f1_score <- 2 * (precision * recall) / (precision + recall)
+accuracy <- sum(diag(classification_table)) / sum(classification_table)
+
+logistic_regression_kable <- kable(as.data.frame.matrix(classification_table), 
+                                   caption = "Logistic Regression Classification Confusion Matrix",
+                                   align = 'c', format = "html") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), 
+                full_width = F, position = "left", 
+                font_size = 12, html_font = "Cambria") %>%
+  add_header_above(c(" " = 1, "Actual Class" = 2)) %>%
+  row_spec(0, bold = TRUE, background = "#F7F7F9")
+
+logistic_regression_metrics <- data.frame(
+  Accuracy = sprintf("%.2f", accuracy),
+  Precision = sprintf("%.2f", precision),
+  Recall = sprintf("%.2f", recall),
+  `F1 Score` = sprintf("%.2f", f1_score)
+)
+
+metrics_kable <- kable(logistic_regression_metrics, 
+                       caption = "Logistic Regression Performance Metrics", 
+                       align = 'c', format = "html") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), 
+                full_width = F, position = "left", 
+                font_size = 12, html_font = "Cambria") %>%
+  add_header_above(c("Performance Metrics" = 4)) %>%
+  row_spec(0, bold = TRUE, background = "#F7F7F9")
+
+logistic_regression_kable
+
+metrics_kable
+```
+-----------------------------------------------------------------------
+
+
+
+
+
